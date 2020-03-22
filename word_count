@@ -1,0 +1,47 @@
+import pandas as pd
+from itertools import chain
+import collections
+import spacy
+from nltk.util import ngrams
+
+
+import os
+os.chdir(r"C:\Users\aathi\OneDrive\Documents")
+
+def flatten(listOfLists):
+    "Flatten one level of nesting"
+    return chain.from_iterable(listOfLists)
+
+
+def word_count(name):
+    data = pd.read_csv(name +'.csv', engine = 'python')
+    data.to_csv(name + '.txt', header=None, index=None, sep=' ', mode='a')
+    txt = open(name + '.txt').read()
+    
+    nlp = spacy.load("en_core_web_sm")
+    nlp.max_length = 250000000
+    doc = nlp(txt,disable = ['ner', 'parser'])
+    
+    texts, article = [], []
+    for w in doc:
+        if w.text != '\n' and not w.is_stop and not w.is_punct and not w.like_num:
+            article.append(w.lemma_)
+        
+        if w.text == '\n':
+            texts.append(article)
+            article = []
+            
+    words = list(flatten(texts))
+    bigrams = ngrams(words,2)
+    trigrams = ngrams(words,3)
+    fourgrams = ngrams(words,4)
+    fivegrams = ngrams(words,5)
+    
+    
+    bigram = pd.DataFrame.from_records(list(collections.Counter(bigrams).items()))
+    trigram = pd.DataFrame.from_records(list(collections.Counter(trigrams).items()))
+    fourgram = pd.DataFrame.from_records(list(collections.Counter(fourgrams).items()))
+    fivegrams = pd.DataFrame.from_records(list(collections.Counter(fivegrams).items()))
+    
+    daat = pd.concat([bigram, trigram, fourgram, fivegrams], axis = 0)
+    return daat.to_csv(name + '_ngram.csv')
