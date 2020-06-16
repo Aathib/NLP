@@ -1,0 +1,344 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[1]:
+
+
+import pandas as pd
+from itertools import chain
+import collections
+import spacy
+import gensim
+import string, sh, glob, os
+from gensim.models.phrases import Phrases, Phraser
+from gensim.summarization.summarizer import summarize
+import pydoop.hdfs as hd
+
+import pandas as pd
+import glob
+import os, re
+import sys
+pd.set_option('max_colwidth',None)
+
+
+# In[2]:
+
+
+## Spellchecker
+import pkg_resources
+from symspellpy import SymSpell, Verbosity
+sym_spell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
+dictionary_path = pkg_resources.resource_filename("symspellpy", "frequency_dictionary_en_82_765.txt")
+bigram_path = pkg_resources.resource_filename("symspellpy", "frequency_bigramdictionary_en_243_342.txt")
+sym_spell.load_dictionary(dictionary_path, term_index=0, count_index=1)
+sym_spell.load_bigram_dictionary(bigram_path, term_index=0, count_index=2)
+
+
+# In[3]:
+
+
+# Split speaker1, speaker2 wrt date
+def splt_spkr(hdfsdir):
+    new_df = pd.DataFrame({'date':[],'week':[], 'filename':[],'spk1':[],'spk2':[]})
+    filelist =[line.rsplit(None,1)[-1]for line in sh.hdfs('dfs','-ls',hdfsdir).split('\n')if len(line.rsplit(None,1))][1:]
+    for filename in filelist:
+        df = pd.read_csv(hd.open(filename))
+        filenam = filename[[i for i,c in enumerate(filename) if c=='/'][-1]+1:len(filename)].split('_')[3]
+        dat = pd.to_datetime(filename[[i for i,c in enumerate(filename) if c=='/'][-1]+1:len(filename)].split('_')[0])
+        x = df.groupby('Speaker')['Text'].apply(' '.join).reset_index()
+        x.Speaker = x.Speaker.str.strip()
+        spkr1 = x[x['Speaker']=='Speaker1']['Text'].to_string(index = False)
+        spkr1 = spkr1 + ' cdes'
+        spkr2 = x[x['Speaker']=='Speaker2']['Text'].to_string(index = False)
+        spkr2 = spkr2 + ' cdes'
+        new_df = new_df.append({'date' : dat, 'week': 1, 'filename':filenam, 'spk1': spkr1, 
+                                'spk2': spkr2}, ignore_index = True)
+        new_df.week = new_df.date.dt.week
+    return new_df
+
+
+# In[4]:
+
+
+newdf = splt_spkr("hdfs:xxxx/")
+
+
+# In[5]:
+
+
+newdf.head(1)
+
+
+# In[6]:
+
+
+def spellcheck(text):
+    input_term = text
+    suggestions = sym_spell.lookup_compound(input_term, max_edit_distance=2)
+    for suggestion in suggestions:
+        return suggestion
+
+
+# In[7]:
+
+
+from datetime import datetime
+start_time = datetime.now()
+newdf.spk1 = newdf.spk1.apply(spellcheck)
+newdf.spk2 = newdf.spk2.apply(spellcheck)
+end_time = datetime.now()
+print('Duration: {}'.format(end_time - start_time))
+
+
+# In[8]:
+
+
+weekdata = newdf.week.value_counts().keys()
+d = {}
+for i in weekdata:
+#     nam1 = "spk1_" + str(i)
+#     nam2 = "spk2_" + str(i)
+    d["spk1_" + str(i)] = newdf[newdf['week']==i]['spk1'].to_string(index = False)
+    d["spk2_" + str(i)] = newdf[newdf['week']==i]['spk2'].to_string(index = False)
+
+
+# In[9]:
+
+
+type(d['spk1_11'])
+
+
+# In[10]:
+
+
+for name, df in d.items():
+    d[name] = d[name].replace('\n', ' ')
+    d[name] = d[name].replace('Sentiment', '')
+    d[name] = d[name].replace('sentiment', '')
+    d[name] = d[name].replace('Series([], )', '')
+    d[name] = d[name].replace('cdes', "'\n'")
+
+
+# In[11]:
+
+
+contraction_mapping = {"ain't": "is not", "aren't": "are not","can't": "cannot", "'cause": "because", "could've": "could have",
+                       "couldn't": "could not", "didn't": "did not",  "doesn't": "does not", "don't": "do not", "hadn't": "had not",
+                       "hasn't": "has not", "haven't": "have not", "he'd": "he would","he'll": "he will", "he's": "he is",
+                       "how'd": "how did", "how'd'y": "how do you", "how'll": "how will", "how's": "how is",  "I'd": "I would",
+                       "I'd've": "I would have", "I'll": "I will", "I'll've": "I will have","I'm": "I am", "I've": "I have",
+                       "i'd": "i would", "i'd've": "i would have", "i'll": "i will",  "i'll've": "i will have","i'm": "i am",
+                       "i've": "i have", "isn't": "is not", "it'd": "it would", "it'd've": "it would have", "it'll": "it will", 
+                       "it'll've": "it will have","it's": "it is", "let's": "let us", "ma'am": "madam", "mayn't": "may not",
+                       "might've": "might have","mightn't": "might not","mightn't've": "might not have", "must've": "must have",
+                       "mustn't": "must not", "mustn't've": "must not have", "needn't": "need not", "needn't've": "need not have",
+                       "o'clock": "of the clock", "oughtn't": "ought not", "oughtn't've": "ought not have", "shan't": "shall not",
+                       "sha'n't": "shall not", "shan't've": "shall not have", "she'd": "she would", "she'd've": "she would have",
+                       "she'll": "she will", "she'll've": "she will have", "she's": "she is", "should've": "should have",
+                       "shouldn't": "should not", "shouldn't've": "should not have", "so've": "so have","so's": "so as",
+                       "this's": "this is","that'd": "that would", "that'd've": "that would have", "that's": "that is",
+                       "there'd": "there would", "there'd've": "there would have", "there's": "there is", "here's": "here is",
+                       "they'd": "they would", "they'd've": "they would have", "they'll": "they will", "they'll've": "they will have", 
+                       "they're": "they are", "they've": "they have", "to've": "to have", "wasn't": "was not", "we'd": "we would", 
+                       "we'd've": "we would have", "we'll": "we will", "we'll've": "we will have", "we're": "we are", "we've": "we have",
+                       "weren't": "were not", "what'll": "what will", "what'll've": "what will have", "what're": "what are",  "what's": "what is",
+                       "what've": "what have", "when's": "when is", "when've": "when have", "where'd": "where did", "where's": "where is",
+                       "where've": "where have", "who'll": "who will", "who'll've": "who will have", "who's": "who is", "who've": "who have", 
+                       "why's": "why is", "why've": "why have", "will've": "will have", "won't": "will not", "won't've": "will not have", 
+                       "would've": "would have", "wouldn't": "would not", "wouldn't've": "would not have", "y'all": "you all",
+                       "y'all'd": "you all would","y'all'd've": "you all would have","y'all're": "you all are","y'all've": "you all have",
+                       "you'd": "you would", "you'd've": "you would have", "you'll": "you will", "you'll've": "you will have", "you're": "you are",
+                       "you've": "you have" }
+
+def clean_contractions(text, mapping):
+    specials = ["’", "‘", "´", "`"]
+    for s in specials:
+        text = text.replace(s, "'")
+    text = ' '.join([mapping[t] if t in mapping else t for t in text.split(" ")])
+    return text
+
+for name, df in d.items():
+    d[name] = clean_contractions(d[name], contraction_mapping)
+    d[name] = clean_contractions(d[name], contraction_mapping)
+
+
+# In[12]:
+
+
+for name, df in d.items():
+    print(name, d[name].count('voicemail'))
+
+
+# In[13]:
+
+
+nlp = spacy.load("en_core_web_lg")
+nlp.max_length = 2500000000
+
+stoplist1 = pd.read_excel(r'/data/speaker1_jun.xlsx')
+stoplist2 = pd.read_excel(r'/data/_speaker2_jun.xlsx')
+stopword1 = stoplist1[stoplist1.Stopword == 1]['Word']
+stopword2 = stoplist2[stoplist2.Stopword == 1]['Word']
+stopword_ud = stopword1.append(stopword2).to_list()
+
+my_stop_words = [ 'Mr', 'Sentiment', 'aa', 'ab', 'ac', 'ad', 'afternoon', 'ag', 'ah', 'ai', 'ak', 'al', 'alright', 'ap', 'ar', 'assist', 'ax', 'b', 'be', 'blue', 'bs',
+ 'bt', 'bye', 'c', 'ca', 'call', 'cc', 'cd', 'ch', 'ci', 'cm', 'cn', 'co', 'community', 'cp', 'cross', 'ct', 'da', 'dc', 'de', 'di', 'dr', 'ds', 'e',
+ 'ea', 'ec', 'ed', 'ee', 'ei', 'ek', 'el', 'em', 'en', 'er', 'es', 'ex', 'f', 'fe', 'fi', 'fo', 'fx', 'g', 'gg', 'gi', 'gm', 'go', 'go to', 'good',
+ 'goodbye', 'gr', 'great', 'h', 'ha', 'happy', 'hd', 'health', 'hello', 'help', 'hi', 'ho', 'hope', 'hp', 'hr','huh','ia', 'id', 'ig', 'ii', 'ik', 'il',
+ 'im', 'iv', 'j', 'jc', 'jo', 'k', 'know', 'kr', 'l', 'la', 'le', 'let', 'lg', 'li', 'like', 'lo', 'lp', 'maam', 'may', 'mc', 'mg', 'mhm', 'mi',
+ 'mm', 'mo', 'mr', 'ms', 'mt', 'n', 'ne', 'ny', 'ob', 'og', 'oh', 'ok', 'okay', 'op', 'os', 'ot', 'ox', 'p', 'pa', 'pb', 'pc', 'pd', 'ph', 'plan',
+ 'pm', 'pn', 'po', 'ps', 'pt', 'q', 'qu', 'r', 'ra', 'rc', 'ri', 'ro', 'rs', 'rx', 'sa', 'said', 'saying', 'says', 'se', 'si', 'sir', 'sorry', 'sp',
+ 'ss', 'st', 'su', 'sure', 'ta', 'tc', 'te', 'th', 'thank', 'ti', 'tm', 'to', 'tt', 'tv', 'u', 'ub', 'ue', 'uh', 'uk', 'um', 'un', 'unk', 'ur', 'us',
+ 'v', 'vr', 'w', 'weekend', 'wi', 'would', 'x', 'xo', 'ye', 'yeah', 'yes', 'yi', 'yo', 'you', 'yu', 'z',  ' ',  '<', '>', 'a','b','c','d','e','f','g','h','i',
+                 'j','k','l','m','n','o','p','q','r','s','t','u','v','w','x','y','z', 'communityhealth', 'healthplan']
+
+final_stopword = stopword_ud + my_stop_words
+for stopword in my_stop_words:
+    lexeme = nlp.vocab[stopword]
+    lexeme.is_stop = True
+    
+
+
+# In[14]:
+
+
+def flatten(listOfLists):
+    return chain.from_iterable(listOfLists)
+
+
+# In[15]:
+
+
+f = {}
+for name, df in d.items():
+    doc1 = nlp(d[name],disable = ['ner', 'parser'])
+    texts1, article1 = [], []
+    for w in doc1:
+        if w.text != '\n' and not w.is_stop and not w.is_punct and not w.like_num:
+            # add the lematized version of the word        
+            article1.append(w.lemma_)# if it's a new line, it means we're onto our next call
+        if w.text == '\n':
+            texts1.append(article1)
+            article1 = []
+    print(len(texts1))
+    bigram1 = gensim.models.Phrases(texts1)
+    texts1 = [bigram1[line] for line in texts1]
+    bgrm1 = list(flatten(texts1)) #Bigram tokens
+#     print(name, "Bigram")
+#     print(pd.DataFrame.from_records(list(collections.Counter([i for i in bgrm1 if '_' in i]).items()),
+#                               columns = ['Word', 'Count']).sort_values('Count', ascending = 0).head())
+    print('-----------------------------')
+    
+    trigram1= gensim.models.Phrases(texts1)#Trigram tokens
+    texts1 = [trigram1[line] for line in texts1]
+    trgrm1 = list(flatten(texts1))
+#     print(name, "Trigram")
+#     print(pd.DataFrame.from_records(list(collections.Counter([i for i in trgrm1 if '_' in i]).items()),
+#                               columns = ['Word', 'Count']).sort_values('Count', ascending = 0 ).head())
+    print('-----------------------------')
+    #Quadgram tokens
+    quadgram1 = gensim.models.Phrases(texts1)
+    texts1 = [quadgram1[line] for line in texts1]
+    qdgrm1 =list(flatten(texts1))
+    final1 = pd.DataFrame.from_records(list(collections.Counter(qdgrm1).items()),
+                              columns = ['Word', 'Count']).sort_values('Count', ascending = 0 )
+    print(name, "Quadgram")
+    final1['ngram'] = final1.Word.str.count('_')
+    print(final1.head())
+    print('-----------------------------')
+    f[name] = final1
+
+
+# In[16]:
+
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+get_ipython().run_line_magic('matplotlib', 'inline')
+
+
+# In[17]:
+
+
+for i, nam in f.items():
+#     print(i.split("_")[1])
+    f.get(i)['week'] = i.split("_")[1]
+
+
+# In[18]:
+
+
+for i, nam in f.items():
+#     print(i.split("_")[0], i)
+    print(i, f.get(i).shape)
+    dd1 = pd.DataFrame()
+    dd2 = pd.DataFrame()
+    merged_final_spk1 = dd1.append([f[i] for i, name in f.items() if i.split("_")[0] == 'spk1'], ignore_index = False)
+    merged_final_spk2 = dd2.append([f[i] for i, name in f.items() if i.split("_")[0] == 'spk2'], ignore_index = False)
+
+
+# In[19]:
+
+
+merged_final_spk1.shape, merged_final_spk2.shape
+
+
+# In[20]:
+
+
+merged_final_spk1[merged_final_spk1.ngram > 0]['Word'].head(6)
+
+
+# In[21]:
+
+
+plt.figure(figsize = [16,14])
+plt.title('Top 20-Word_Count for speaker1')
+sns.barplot(x = 'Count', y = merged_final_spk1[merged_final_spk1.ngram > 0]['Word'].head(20),  hue = 'week', data = merged_final_spk1)
+
+
+# In[22]:
+
+
+plt.figure(figsize = [16,14])
+plt.title('Top 20-Word_Count for speaker2')
+sns.barplot(x = 'Count', y = merged_final_spk2[merged_final_spk2.ngram > 0]['Word'].head(20),  hue = 'week', data = merged_final_spk2)
+
+
+# In[24]:
+
+
+merged_final_spk1.to_csv(r'spk1_wordcount_week.csv')
+merged_final_spk2.to_csv(r'spk2_wordcount_week.csv')
+
+
+# In[25]:
+
+
+import sys, os
+import pandas as pd
+from functools import partial, reduce
+
+def week_arrange(filename, file):    
+    df = filename
+    y = pd.get_dummies(df.week, prefix = 'Week')
+    x  = pd.concat([df,y], axis = 1)
+    
+    cols = x.columns
+    ls = [i for i in cols if '_' in i]
+    for i in ls:
+        x[i] = x[i] * x['Count']   
+    
+    f ={}
+    for i in ls:
+        f[i] = x.groupby('Word')[i].sum()
+    
+    my_reduce = partial(pd.merge, on='Word', how='outer')
+    result = reduce(my_reduce, f.values())
+    result.index = result.index.str.strip()
+    result = result[result.index!= '']
+    return result.to_csv(file + '_rearranged.csv')
+
+week_arrange(merged_final_spk1, 'spk1_wordcount_week_spell')
+week_arrange(merged_final_spk2, 'TSK_spk2_wordcount_week_spell')
+
